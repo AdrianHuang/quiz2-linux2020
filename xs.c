@@ -58,7 +58,7 @@ xs *xs_new(xs *x, const void *p)
 {
     *x = xs_literal_empty();
     size_t len = strlen(p) + 1;
-    if (len > 15) {
+    if (len > 16) {
         x->capacity = ilog2(len) + 1;
         x->size = len - 1;
         x->is_ptr = true;
