@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define MAX_STR_LEN ((1UL << 54) - 1)
+
 typedef union {
     /* allow strings up to 15 bytes to stay on the stack
      * use the last byte as a null terminator and to store flags
@@ -73,11 +75,11 @@ xs *xs_new(xs *x, const void *p)
  * short strings.
  * "" causes a compile-time error if x is not a string literal or too long.
  */
-#define xs_tmp(x)                                          \
-    ((void) ((struct {                                     \
-         _Static_assert(sizeof(x) <= 16, "it is too big"); \
-         int dummy;                                        \
-     }){1}),                                               \
+#define xs_tmp(x)                                                   \
+    ((void) ((struct {                                              \
+         _Static_assert(sizeof(x) <= MAX_STR_LEN, "it is too big"); \
+         int dummy;                                                 \
+     }){1}),                                                        \
      xs_new(&xs_literal_empty(), "" x))
 
 /* grow up to specified size */
