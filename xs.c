@@ -4,7 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX_STR_LEN ((1UL << 54) - 1)
+#define MAX_STR_LEN_BITS    (54)
+#define MAX_STR_LEN         ((1UL << MAX_STR_LEN_BITS) - 1)
 
 typedef union {
     /* allow strings up to 15 bytes to stay on the stack
@@ -27,8 +28,8 @@ typedef union {
     /* heap allocated */
     struct {
         char *ptr;
-        /* supports strings up to 2^54 - 1 bytes */
-        size_t size : 54,
+        /* supports strings up to 2^MAX_STR_LEN_BITS - 1 bytes */
+        size_t size : MAX_STR_LEN_BITS,
             /* capacity is always a power of 2 (unsigned)-1 */
             capacity : 6;
         /* the last 4 bits are important flags */
