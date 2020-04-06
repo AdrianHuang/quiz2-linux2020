@@ -7,6 +7,8 @@
 #define MAX_STR_LEN_BITS    (54)
 #define MAX_STR_LEN         ((1UL << MAX_STR_LEN_BITS) - 1)
 
+#define LARGE_STRING_LEN    255
+
 typedef union {
     /* allow strings up to 15 bytes to stay on the stack
      * use the last byte as a null terminator and to store flags
@@ -22,7 +24,7 @@ typedef union {
              */
             space_left : 4,
             /* if it is on heap, set to 1 */
-            is_ptr : 1, flag1 : 1, flag2 : 1, flag3 : 1;
+            is_ptr : 1, is_large_string: 1, flag2 : 1, flag3 : 1;
     };
 
     /* heap allocated */
@@ -37,6 +39,10 @@ typedef union {
 } xs;
 
 static inline bool xs_is_ptr(const xs *x) { return x->is_ptr; }
+static inline bool xs_is_large_string(const xs *x)
+{
+    return x->is_large_string;
+}
 static inline size_t xs_size(const xs *x)
 {
     return xs_is_ptr(x) ? x->size : 15 - x->space_left;
@@ -49,11 +55,47 @@ static inline size_t xs_capacity(const xs *x)
 {
     return xs_is_ptr(x) ? ((size_t) 1 << x->capacity) - 1 : 15;
 }
+static inline void xs_set_ref_count(const xs *x, int val)
+{
+    *((int *) ((size_t) x->ptr + (1 << x->capacity))) = val;
+}
+static inline void xs_inc_ref_count(const xs *x)
+{
+    if (xs_is_large_string(x))
+        ++(*(int *) ((size_t) x->ptr + (1 << x->capacity)));
+}
+static inline int xs_dec_ref_count(const xs *x)
+{
+    if (!xs_is_large_string(x))
+        return 0;
+    return --(*(int *) ((size_t) x->ptr + (1 << x->capacity)));
+}
 
 #define xs_literal_empty() \
     (xs) { .space_left = 15 }
 
 static inline int ilog2(uint32_t n) { return 32 - __builtin_clz(n) - 1; }
+
+static void xs_allocate_data(xs *x, size_t len, bool reallocate)
+{
+    /* Medium string */
+    if (len <= LARGE_STRING_LEN) {
+        x->ptr = reallocate ? realloc(x->ptr, (size_t) 1 << x->capacity) :
+                              malloc((size_t) 1 << x->capacity);
+        return;
+    }
+
+    /*
+     * Large string
+     */
+    x->is_large_string = 1;
+
+    /* The extra 4 bytes are used to store the reference count */
+    x->ptr = reallocate ? realloc(x->ptr, (size_t) (1 << x->capacity) + 4) :
+                          malloc((size_t) (1 << x->capacity) + 4);
+
+    xs_set_ref_count(x, 1);
+}
 
 xs *xs_new(xs *x, const void *p)
 {
@@ -63,7 +105,7 @@ xs *xs_new(xs *x, const void *p)
         x->capacity = ilog2(len) + 1;
         x->size = len - 1;
         x->is_ptr = true;
-        x->ptr = malloc((size_t) 1 << x->capacity);
+        xs_allocate_data(x, len, 0);
         memcpy(x->ptr, p, len);
     } else {
         memcpy(x->data, p, len);
@@ -86,19 +128,25 @@ xs *xs_new(xs *x, const void *p)
 /* grow up to specified size */
 xs *xs_grow(xs *x, size_t len)
 {
+    size_t capacity;
+    char buf[16];
+
     if (len <= xs_capacity(x))
         return x;
-    len = ilog2(len) + 1;
-    if (xs_is_ptr(x))
-        x->ptr = realloc(x->ptr, (size_t) 1 << len);
-    else {
-        char buf[16];
+
+    /* Backup first */
+    if (!xs_is_ptr(x))
         memcpy(buf, x->data, 16);
-        x->ptr = malloc((size_t) 1 << len);
+
+    x->is_ptr = true;
+    x->capacity = ilog2(len) + 1;
+
+    if (xs_is_ptr(x)) {
+        xs_allocate_data(x, len, 1);
+    } else {
+        xs_allocate_data(x, len, 0);
         memcpy(x->ptr, buf, 16);
     }
-    x->is_ptr = true;
-    x->capacity = len;
     return x;
 }
 
@@ -110,7 +158,7 @@ static inline xs *xs_newempty(xs *x)
 
 static inline xs *xs_free(xs *x)
 {
-    if (xs_is_ptr(x))
+    if (xs_is_ptr(x) && xs_dec_ref_count(x) <= 0)
         free(xs_data(x));
     return xs_newempty(x);
 }
@@ -188,6 +236,27 @@ xs *xs_trim(xs *x, const char *trimset)
     return x;
 #undef check_bit
 #undef set_bit
+}
+
+void xs_copy(xs *dest, xs *src)
+{
+    *dest = *src;
+
+    /*
+     * src string from stack: No need to invoke memcpy() since the data
+     * has been copied from the statement '*dest = *src'
+     */
+    if (!xs_is_ptr(src))
+        return;
+
+    if (xs_is_large_string(src)) {
+        /* CoW: simply increase the reference count */
+        xs_inc_ref_count(src);
+    } else {
+        /* Medium string */
+        dest->ptr = malloc((size_t) 1 << src->capacity);
+        memcpy(dest->ptr, src->ptr, src->size);
+    }
 }
 
 #include <stdio.h>
