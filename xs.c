@@ -1,13 +1,15 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
-#define MAX_STR_LEN_BITS    (54)
-#define MAX_STR_LEN         ((1UL << MAX_STR_LEN_BITS) - 1)
+#define MAX_STR_LEN_BITS (54)
+#define MAX_STR_LEN ((1UL << MAX_STR_LEN_BITS) - 1)
 
-#define LARGE_STRING_LEN    255
+#define LARGE_STRING_LEN 256
 
 typedef union {
     /* allow strings up to 15 bytes to stay on the stack
@@ -24,7 +26,7 @@ typedef union {
              */
             space_left : 4,
             /* if it is on heap, set to 1 */
-            is_ptr : 1, is_large_string: 1, flag2 : 1, flag3 : 1;
+            is_ptr : 1, is_large_string : 1, flag2 : 1, flag3 : 1;
     };
 
     /* heap allocated */
@@ -32,13 +34,16 @@ typedef union {
         char *ptr;
         /* supports strings up to 2^MAX_STR_LEN_BITS - 1 bytes */
         size_t size : MAX_STR_LEN_BITS,
-            /* capacity is always a power of 2 (unsigned)-1 */
-            capacity : 6;
+                      /* capacity is always a power of 2 (unsigned)-1 */
+                      capacity : 6;
         /* the last 4 bits are important flags */
     };
 } xs;
 
-static inline bool xs_is_ptr(const xs *x) { return x->is_ptr; }
+static inline bool xs_is_ptr(const xs *x)
+{
+    return x->is_ptr;
+}
 static inline bool xs_is_large_string(const xs *x)
 {
     return x->is_large_string;
@@ -74,14 +79,17 @@ static inline int xs_dec_ref_count(const xs *x)
 #define xs_literal_empty() \
     (xs) { .space_left = 15 }
 
-static inline int ilog2(uint32_t n) { return 32 - __builtin_clz(n) - 1; }
+static inline int ilog2(uint32_t n)
+{
+    return 32 - __builtin_clz(n) - 1;
+}
 
 static void xs_allocate_data(xs *x, size_t len, bool reallocate)
 {
     /* Medium string */
-    if (len <= LARGE_STRING_LEN) {
-        x->ptr = reallocate ? realloc(x->ptr, (size_t) 1 << x->capacity) :
-                              malloc((size_t) 1 << x->capacity);
+    if (len < LARGE_STRING_LEN) {
+        x->ptr = reallocate ? realloc(x->ptr, (size_t) 1 << x->capacity)
+                            : malloc((size_t) 1 << x->capacity);
         return;
     }
 
@@ -91,8 +99,8 @@ static void xs_allocate_data(xs *x, size_t len, bool reallocate)
     x->is_large_string = 1;
 
     /* The extra 4 bytes are used to store the reference count */
-    x->ptr = reallocate ? realloc(x->ptr, (size_t) (1 << x->capacity) + 4) :
-                          malloc((size_t) (1 << x->capacity) + 4);
+    x->ptr = reallocate ? realloc(x->ptr, (size_t)(1 << x->capacity) + 4)
+                        : malloc((size_t)(1 << x->capacity) + 4);
 
     xs_set_ref_count(x, 1);
 }
@@ -105,7 +113,7 @@ xs *xs_new(xs *x, const void *p)
         x->capacity = ilog2(len) + 1;
         x->size = len - 1;
         x->is_ptr = true;
-        xs_allocate_data(x, len, 0);
+        xs_allocate_data(x, x->size, 0);
         memcpy(x->ptr, p, len);
     } else {
         memcpy(x->data, p, len);
@@ -116,19 +124,17 @@ xs *xs_new(xs *x, const void *p)
 
 /* Memory leaks happen if the string is too long but it is still useful for
  * short strings.
- * "" causes a compile-time error if x is not a string literal or too long.
  */
 #define xs_tmp(x)                                                   \
     ((void) ((struct {                                              \
          _Static_assert(sizeof(x) <= MAX_STR_LEN, "it is too big"); \
          int dummy;                                                 \
      }){1}),                                                        \
-     xs_new(&xs_literal_empty(), "" x))
+     xs_new(&xs_literal_empty(), x))
 
 /* grow up to specified size */
 xs *xs_grow(xs *x, size_t len)
 {
-    size_t capacity;
     char buf[16];
 
     if (len <= xs_capacity(x))
@@ -259,9 +265,55 @@ void xs_copy(xs *dest, xs *src)
     }
 }
 
-#include <stdio.h>
+#define NR_TESTS 10000
+#define TEST_MAX_STRING 4095
 
-int main()
+enum {
+    SMALL_STRING,
+    MEDIUM_STRING,
+    LARGE_STRING,
+
+    NR_STRING_TYPE
+};
+
+static const char charset[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+
+static void init_random_string(uint8_t *buf, uint32_t type)
+{
+    size_t length_array[] = {15, 255, TEST_MAX_STRING};
+    size_t len = length_array[type];
+    size_t n;
+
+    for (n = 0; n < len; n++) {
+        buf[n] = charset[rand() % (sizeof charset - 1)];
+    }
+    buf[n] = 0;
+}
+
+static void run_string_strategy_test(void)
+{
+    char random_string[NR_STRING_TYPE][TEST_MAX_STRING];
+    xs backup_string[NR_TESTS];
+    xs string;
+    int i, j;
+
+    srand((unsigned int) (time(NULL)));
+
+    for (i = SMALL_STRING; i < NR_STRING_TYPE; i++) {
+        init_random_string(random_string[i], i);
+
+        string = *xs_tmp(random_string[i]);
+        for (j = 0; j < NR_TESTS; j++) {
+            xs_copy(&backup_string[j], &string);
+        }
+
+        xs_free(&string);
+        for (j = 0; j < NR_TESTS; j++)
+            xs_free(&backup_string[j]);
+    }
+}
+
+static void func_test(void)
 {
     xs string = *xs_tmp("\n foobarbar \n\n\n");
     xs_trim(&string, "\n ");
@@ -270,6 +322,11 @@ int main()
     xs prefix = *xs_tmp("((("), suffix = *xs_tmp(")))");
     xs_concat(&string, &prefix, &suffix);
     printf("[%s] : %2zu\n", xs_data(&string), xs_size(&string));
+}
 
+int main()
+{
+    func_test();
+    run_string_strategy_test();
     return 0;
 }
