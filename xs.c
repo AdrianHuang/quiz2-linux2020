@@ -297,7 +297,7 @@ void xs_copy(xs *dest, xs *src)
 }
 
 #define NR_TESTS 10000
-#define TEST_MAX_STRING 4095
+#define TEST_MAX_STRING (4 * 1024 * 1024 - 1)
 
 #define CONCAT_STRING_IDX_START 0
 #define CONCAT_STRING_IDX_END 99
@@ -319,6 +319,8 @@ enum {
 static const char charset[] = "abcdefghijklmnopqrstuvwxyz0123456789";
 static const char str_type_desc[NR_STRING_TYPE][8] = {"Small", "Medium",
                                                       "Large"};
+static char random_string[NR_STRING_TYPE][TEST_MAX_STRING];
+static xs backup_string[NR_TESTS];
 
 static void init_random_string(uint8_t *buf, uint32_t type)
 {
@@ -374,8 +376,6 @@ static void run_trim_test(xs *orig_string, xs *backup_string)
 
 static void run_string_strategy_test(void)
 {
-    char random_string[NR_STRING_TYPE][TEST_MAX_STRING];
-    xs backup_string[NR_TESTS];
     xs string;
     int i, j;
 
