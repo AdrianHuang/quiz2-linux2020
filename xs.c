@@ -76,6 +76,13 @@ static inline int xs_dec_ref_count(const xs *x)
     return --(*(int *) ((size_t) x->ptr + (1 << x->capacity)));
 }
 
+static inline int xs_get_ref_count(const xs *x)
+{
+    if (!xs_is_large_string(x))
+        return 0;
+    return (*(int *) ((size_t) x->ptr + (1 << x->capacity)));
+}
+
 #define xs_literal_empty() \
     (xs) { .space_left = 15 }
 
@@ -169,6 +176,25 @@ static inline xs *xs_free(xs *x)
     return xs_newempty(x);
 }
 
+static bool xs_cow_lazy_copy(xs *x, char **data)
+{
+    if (xs_get_ref_count(x) <= 1)
+        return false;
+
+    /*
+     * Lazy copy
+     */
+    xs_dec_ref_count(x);
+    xs_allocate_data(x, x->size, 0);
+
+    if (data) {
+        memcpy(x->ptr, *data, x->size);
+
+        /* Update the newly allocated pointer */
+        *data = xs_data(x);
+    }
+}
+
 xs *xs_concat(xs *string, const xs *prefix, const xs *suffix)
 {
     size_t pres = xs_size(prefix), sufs = xs_size(suffix),
@@ -176,6 +202,8 @@ xs *xs_concat(xs *string, const xs *prefix, const xs *suffix)
 
     char *pre = xs_data(prefix), *suf = xs_data(suffix),
          *data = xs_data(string);
+
+    xs_cow_lazy_copy(string, &data);
 
     if (size + pres + sufs <= capacity) {
         memmove(data + pres, data, size);
@@ -206,6 +234,9 @@ xs *xs_trim(xs *x, const char *trimset)
         return x;
 
     char *dataptr = xs_data(x), *orig = dataptr;
+
+    if (xs_cow_lazy_copy(x, &dataptr))
+        orig = dataptr;
 
     /* similar to strspn/strpbrk but it operates on binary data */
     uint8_t mask[32] = {0};
@@ -268,6 +299,15 @@ void xs_copy(xs *dest, xs *src)
 #define NR_TESTS 10000
 #define TEST_MAX_STRING 4095
 
+#define CONCAT_STRING_IDX_START 0
+#define CONCAT_STRING_IDX_END 99
+#define CONCAT_STRING_TIMES \
+    (CONCAT_STRING_IDX_END - CONCAT_STRING_IDX_START + 1)
+
+#define TRIM_STRING_IDX_START 100
+#define TRIM_STRING_IDX_END 199
+#define TRIM_STRING_TIMES (TRIM_STRING_IDX_END - TRIM_STRING_IDX_START + 1)
+
 enum {
     SMALL_STRING,
     MEDIUM_STRING,
@@ -277,6 +317,8 @@ enum {
 };
 
 static const char charset[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+static const char str_type_desc[NR_STRING_TYPE][8] = {"Small", "Medium",
+                                                      "Large"};
 
 static void init_random_string(uint8_t *buf, uint32_t type)
 {
@@ -284,10 +326,50 @@ static void init_random_string(uint8_t *buf, uint32_t type)
     size_t len = length_array[type];
     size_t n;
 
-    for (n = 0; n < len; n++) {
+    /* Bookmark for trimming string. */
+    buf[0] = '@';
+    for (n = 1; n < len - 1; n++)
         buf[n] = charset[rand() % (sizeof charset - 1)];
+
+    /* Bookmark for trimming string. */
+    buf[n] = '#';
+    buf[n + 1] = 0;
+}
+
+static void run_concat_test(xs *orig_string, xs *backup_string)
+{
+    int j;
+
+    xs prefix = *xs_tmp("((("), suffix = *xs_tmp(")))");
+
+    printf("concatenate copied string for %d sets, ", CONCAT_STRING_TIMES);
+    for (j = CONCAT_STRING_IDX_START; j <= CONCAT_STRING_IDX_END; j++)
+        xs_concat(backup_string + j, &prefix, &suffix);
+
+    for (j = CONCAT_STRING_IDX_START; j <= CONCAT_STRING_IDX_END; j++) {
+        if (xs_is_large_string(backup_string + j) &&
+            xs_get_ref_count(backup_string + j) != 1) {
+            printf("[Error]: backup_string[%d] ref. count != 1\n", j);
+        }
     }
-    buf[n] = 0;
+    printf("ref. count: %d\n", xs_get_ref_count(orig_string));
+}
+
+static void run_trim_test(xs *orig_string, xs *backup_string)
+{
+    int j;
+
+    printf("trim copied string for another %d sets, ", TRIM_STRING_TIMES);
+    for (j = TRIM_STRING_IDX_START; j <= TRIM_STRING_IDX_END; j++)
+        xs_trim(backup_string + j, "@#");
+
+    for (j = TRIM_STRING_IDX_START; j <= TRIM_STRING_IDX_END; j++) {
+        if (xs_is_large_string(backup_string + j) &&
+            xs_get_ref_count(backup_string + j) != 1) {
+            printf("[Error]: backup_string[%d] ref. count != 1\n", j);
+        }
+    }
+    printf("ref. count: %d\n", xs_get_ref_count(orig_string));
 }
 
 static void run_string_strategy_test(void)
@@ -303,9 +385,17 @@ static void run_string_strategy_test(void)
         init_random_string(random_string[i], i);
 
         string = *xs_tmp(random_string[i]);
-        for (j = 0; j < NR_TESTS; j++) {
+
+        printf("-------------- %s string --------------\n", str_type_desc[i]);
+        printf("copy string %d times, ", NR_TESTS);
+
+        for (j = 0; j < NR_TESTS; j++)
             xs_copy(&backup_string[j], &string);
-        }
+        printf("ref. count: %d\n", xs_get_ref_count(&string));
+
+        run_concat_test(&string, backup_string);
+        run_trim_test(&string, backup_string);
+        printf("------------------------------------------\n\n");
 
         xs_free(&string);
         for (j = 0; j < NR_TESTS; j++)
