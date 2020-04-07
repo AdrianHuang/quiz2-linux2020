@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #define MAX_STR_LEN_BITS (54)
 #define MAX_STR_LEN ((1UL << MAX_STR_LEN_BITS) - 1)
@@ -39,6 +40,8 @@ typedef union {
         /* the last 4 bits are important flags */
     };
 } xs;
+
+static int disable_cow;
 
 static inline bool xs_is_ptr(const xs *x)
 {
@@ -100,7 +103,7 @@ static inline int ilog2(uint32_t n)
 static void xs_allocate_data(xs *x, size_t len, bool reallocate)
 {
     /* Medium string */
-    if (len < LARGE_STRING_LEN) {
+    if (len < LARGE_STRING_LEN || disable_cow) {
         x->ptr = reallocate ? realloc(x->ptr, (size_t) 1 << x->capacity)
                             : malloc((size_t) 1 << x->capacity);
         return;
@@ -420,8 +423,33 @@ static void func_test(void)
     printf("[%s] : %2zu\n", xs_data(&string), xs_size(&string));
 }
 
-int main()
+static void usage(char *cmd)
 {
+    printf("Usage: %s [-h] [-d] \n", cmd);
+    printf("\t-h         Print this information\n");
+    printf("\t-d         Disable CoW\n");
+    exit(0);
+}
+
+int main(int argc, char *argv[])
+{
+    int c;
+
+    while ((c = getopt(argc, argv, "hd")) != -1) {
+        switch (c) {
+        case 'h':
+            usage(argv[0]);
+            break;
+        case 'd':
+            disable_cow = 1;
+            break;
+        default:
+            printf("Unknown option '%c'\n", c);
+            usage(argv[0]);
+            break;
+        }
+    }
+
     func_test();
     run_string_strategy_test();
     return 0;
