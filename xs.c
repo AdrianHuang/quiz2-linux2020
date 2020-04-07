@@ -54,7 +54,13 @@ static inline size_t xs_size(const xs *x)
 }
 static inline char *xs_data(const xs *x)
 {
-    return xs_is_ptr(x) ? (char *) x->ptr : (char *) x->data;
+    if (!xs_is_ptr(x))
+        return (char *) x->data;
+
+    if (xs_is_large_string(x)) {
+        return (char *) (x->ptr + 4);
+    }
+    return (char *) x->ptr;
 }
 static inline size_t xs_capacity(const xs *x)
 {
@@ -62,25 +68,25 @@ static inline size_t xs_capacity(const xs *x)
 }
 static inline void xs_set_ref_count(const xs *x, int val)
 {
-    *((int *) ((size_t) x->ptr + (1 << x->capacity))) = val;
+    *((int *) ((size_t) x->ptr)) = val;
 }
 static inline void xs_inc_ref_count(const xs *x)
 {
     if (xs_is_large_string(x))
-        ++(*(int *) ((size_t) x->ptr + (1 << x->capacity)));
+        ++(*(int *) ((size_t) x->ptr));
 }
 static inline int xs_dec_ref_count(const xs *x)
 {
     if (!xs_is_large_string(x))
         return 0;
-    return --(*(int *) ((size_t) x->ptr + (1 << x->capacity)));
+    return --(*(int *) ((size_t) x->ptr));
 }
 
 static inline int xs_get_ref_count(const xs *x)
 {
     if (!xs_is_large_string(x))
         return 0;
-    return (*(int *) ((size_t) x->ptr + (1 << x->capacity)));
+    return *(int *) ((size_t) x->ptr);
 }
 
 #define xs_literal_empty() \
@@ -121,7 +127,7 @@ xs *xs_new(xs *x, const void *p)
         x->size = len - 1;
         x->is_ptr = true;
         xs_allocate_data(x, x->size, 0);
-        memcpy(x->ptr, p, len);
+        memcpy(xs_data(x), p, len);
     } else {
         memcpy(x->data, p, len);
         x->space_left = 15 - (len - 1);
@@ -158,7 +164,7 @@ xs *xs_grow(xs *x, size_t len)
         xs_allocate_data(x, len, 1);
     } else {
         xs_allocate_data(x, len, 0);
-        memcpy(x->ptr, buf, 16);
+        memcpy(xs_data(x), buf, 16);
     }
     return x;
 }
@@ -172,7 +178,7 @@ static inline xs *xs_newempty(xs *x)
 static inline xs *xs_free(xs *x)
 {
     if (xs_is_ptr(x) && xs_dec_ref_count(x) <= 0)
-        free(xs_data(x));
+        free(x->ptr);
     return xs_newempty(x);
 }
 
@@ -188,7 +194,7 @@ static bool xs_cow_lazy_copy(xs *x, char **data)
     xs_allocate_data(x, x->size, 0);
 
     if (data) {
-        memcpy(x->ptr, *data, x->size);
+        memcpy(xs_data(x), *data, x->size);
 
         /* Update the newly allocated pointer */
         *data = xs_data(x);
