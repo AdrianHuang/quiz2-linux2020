@@ -202,6 +202,7 @@ static bool xs_cow_lazy_copy(xs *x, char **data)
         /* Update the newly allocated pointer */
         *data = xs_data(x);
     }
+    return true;
 }
 
 xs *xs_concat(xs *string, const xs *prefix, const xs *suffix)
